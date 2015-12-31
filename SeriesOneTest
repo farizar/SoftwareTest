@@ -1,0 +1,357 @@
+Public MyName As String
+Public MyWorkbook As String
+Public dirName() As String
+Public iCount As Integer
+
+
+Sub ProcessMultipleTextFilesInMultipleDirectories()
+'
+'   This code will sit outside the directories containing the data files
+
+    Dim rowNum, colNum As Integer
+    Dim currCell As Range
+    Dim rowNum2, colNum2 As Integer
+    Dim currCell2 As Range
+    Dim lastLoadRow As Double
+    Dim folderString As String
+    Dim iFolderCount As Integer
+    Dim rConstants As Range
+    
+    'Special messages for this run
+    MsgBox "Reminder to self: A special condition was placed for Case 17 to force data extraction at 2 hrs"
+    
+    'Turn off automatic calculation and screen updating which speeds up macro
+    Application.Calculation = xlManual
+    Application.ScreenUpdating = False
+        
+    'Clear previous results without deleting formulae on sheet
+    On Error Resume Next
+    Set rConstants = Sheets(1).Range("C8:P143").SpecialCells(xlCellTypeConstants)
+    rConstants.ClearContents
+    Set rConstants = Sheets(1).Range("C8:P143").SpecialCells(xlCellTypeFormulas)
+    rConstants.Interior.ColorIndex = 2
+    On Error GoTo 0
+    
+    'Find name of this workbook
+    MyWorkbook = ThisWorkbook.Name
+    
+    'Find the path of this workbook
+    MyPath = ThisWorkbook.Path & "\"
+    
+    'Record the list of directories to process this folder
+    folderString = Dir(MyPath, vbDirectory)
+    Do While folderString <> ""
+        'Ignore the current directory and the encompassing directory.
+        If folderString <> "." And folderString <> ".." Then
+            'Use bitwise comparison to make sure folderString is a directory.
+            If (GetAttr(MyPath & folderString) And vbDirectory) = vbDirectory Then
+                ReDim Preserve dirName(iFolderCount)
+                dirName(iFolderCount) = folderString
+                iFolderCount = iFolderCount + 1
+            End If
+        End If
+        'Get next entry
+        folderString = Dir
+    Loop
+    
+    For iCount = 0 To iFolderCount - 1
+        'Retrieve the first file in the directory
+        MyName = Dir(MyPath & dirName(iCount) & "\", vbDirectory)
+        Do While MyName <> ""
+            'Ignore the current directory and the encompassing directory.
+            If MyName <> "." And MyName <> ".." And MyName Like "*.o*" Then
+                'Use bitwise comparison to make sure MyName is not a directory.
+                If (GetAttr(MyPath & dirName(iCount) & "\" & MyName) And vbDirectory) <> vbDirectory Then
+                    
+                    'Open File
+                    Workbooks.OpenText Filename:=MyPath & dirName(iCount) & "\" & MyName, _
+                        Origin:=xlMSDOS, StartRow:=1, DataType:=xlDelimited, _
+                        TextQualifier:=xlDoubleQuote, _
+                        ConsecutiveDelimiter:=True, Tab:=False, _
+                        Semicolon:=False, Comma:=False, Space:=True, _
+                        Other:=False, TrailingMinusNumbers:=True, _
+                        Local:=True
+            
+                    'Process the file
+                    Application.Run "Extract_Test_Results"
+                    
+                    'Close the File
+                    Windows(MyName).Close False
+                
+                End If
+            End If
+            'Get next entry
+            MyName = Dir
+        Loop
+    Next iCount
+    
+    'Turn on automatic calculation which speeds up macro
+    Application.Calculation = xlAutomatic
+    Application.ScreenUpdating = True
+    
+    Application.Run "Post-data processing"
+
+End Sub
+Sub Extract_Test_Results()
+'
+'
+    Dim rowNum As Integer, colNum As Integer, currCell As Range
+   
+'------------------------------------------------
+'For troubleshooting
+'-------------------
+'Set currCell = ThisWorkbook.Sheets(1).Range("R8")
+'If 1 < 0 Then
+'------------------------------------------------
+    
+    'Initialize pointer to store results to the correct case
+    temp = Split(MyName, ".")
+    testCase = Mid(temp(0), 5)
+    Set currCell = Workbooks(MyWorkbook).Sheets(1).Range("A:A"). _
+        Find(What:=testCase, After:=Range("A1"), LookIn:=xlFormulas, LookAt _
+        :=xlWhole, SearchOrder:=xlByColumns, SearchDirection:=xlNext, MatchCase:= _
+        False, SearchFormat:=False)
+    Select Case dirName(iCount)
+        Case "RADTRAD v3.03"
+            Set currCell = currCell.Offset(0, 1)
+        Case "RADTRAD v3.10"
+            Set currCell = currCell.Offset(0, 1).Offset(1, 0)
+        Case "RDTRD01P"
+            Set currCell = currCell.Offset(0, 1).Offset(2, 0)
+    End Select
+    
+'------------------------------------------------
+'For troubleshooting
+'-------------------
+'End If
+'------------------------------------------------
+    
+    'Determine ending time of simulation based on final row in Cumulative Dose Summary
+    Cells.Find(What:="Cumulative", After:=Range("A1"), LookIn:=xlFormulas, LookAt _
+        :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+        False, SearchFormat:=False).Select
+    'For the anomaly case 17, the end time is 2 hrs and not 720 hrs as simulated in v3.10 and RDTRD01P
+    If testCase <> 17 Then
+        endTime = ActiveCell.Offset(3, 0).End(xlDown).Value
+    Else
+        endTime = 2
+    End If
+    
+    'Look for keyword "output" from the bottom to enter the OUTPUT section
+    Cells.Find(What:="output", After:=Range("A1"), LookIn:=xlFormulas, LookAt _
+        :=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:= _
+        False, SearchFormat:=False).Select
+
+    '===============================================================
+    'PART 1: FIRST GATHER RESULTS FOR EAB, LPZ AND CONTROL ROOM DOSE
+    '===============================================================
+    
+    'Look for keyword endTime to find output results
+    Cells.Find(What:=endTime, After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+        :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+        False, SearchFormat:=False).Select
+    'Keep looking for endTime until it is a time value in the OUTPUT section
+    Do While ActiveCell.Offset(0, -3).Value <> "Time"
+        Cells.FindNext(After:=ActiveCell).Select
+    Loop
+    
+    'Once the first instance of endTime is found, check what value it is and store data accordingly
+    If ActiveCell.Offset(-2, -3).Value = "Exclusion" Then
+        currCell.Offset(0, 1) = ActiveCell.Offset(2, 0).Value
+        currCell.Offset(0, 2) = ActiveCell.Offset(2, 1).Value
+        currCell.Offset(0, 3) = ActiveCell.Offset(2, 2).Value
+    ElseIf ActiveCell.Offset(-2, -3).Value = "Low" Then
+        currCell.Offset(0, 4) = ActiveCell.Offset(2, 0).Value
+        currCell.Offset(0, 5) = ActiveCell.Offset(2, 1).Value
+        currCell.Offset(0, 6) = ActiveCell.Offset(2, 2).Value
+    ElseIf ActiveCell.Offset(-2, -3).Value = "Control" Then
+        currCell.Offset(0, 7) = ActiveCell.Offset(2, 0).Value
+        currCell.Offset(0, 8) = ActiveCell.Offset(2, 1).Value
+        currCell.Offset(0, 9) = ActiveCell.Offset(2, 2).Value
+    End If
+        
+    'Keep looking for keyword endTime to find other output results
+    'if the first instance of endTime was not for "Control" Room dose and there is LPZ dose available
+    If ActiveCell.Offset(-2, -3).Value <> "Control" And ActiveCell.Offset(4, -3).Value = "Low" Then
+        Cells.FindNext(After:=ActiveCell).Select
+        'Keep looking for endTime until all EAB, LPZ and Control Room dose are extracted
+        Do While ActiveCell.Offset(0, -3).Value = "Time"
+            If ActiveCell.Offset(-2, -3).Value = "Exclusion" Then
+                currCell.Offset(0, 1) = ActiveCell.Offset(2, 0).Value
+                currCell.Offset(0, 2) = ActiveCell.Offset(2, 1).Value
+                currCell.Offset(0, 3) = ActiveCell.Offset(2, 2).Value
+            ElseIf ActiveCell.Offset(-2, -3).Value = "Low" Then
+                currCell.Offset(0, 4) = ActiveCell.Offset(2, 0).Value
+                currCell.Offset(0, 5) = ActiveCell.Offset(2, 1).Value
+                currCell.Offset(0, 6) = ActiveCell.Offset(2, 2).Value
+                'Exit Do loop if there isn't a Control Room dose result to come
+                If ActiveCell.Offset(4, -3).Value <> "Control" Then
+                    Exit Do
+                End If
+            ElseIf ActiveCell.Offset(-2, -3).Value = "Control" Then
+                currCell.Offset(0, 7) = ActiveCell.Offset(2, 0).Value
+                currCell.Offset(0, 8) = ActiveCell.Offset(2, 1).Value
+                currCell.Offset(0, 9) = ActiveCell.Offset(2, 2).Value
+                'Exit Do loop once the final Control Room dose results have been
+                'obtained.
+                Exit Do
+            End If
+            Cells.FindNext(After:=ActiveCell).Select
+        Loop
+    End If
+    
+    '================================================================
+    'PART 2: GATHER ACTIVITY RESULTS FOR XENON
+    '================================================================
+    
+    'May not exist: Xenon data are available in the Nuclide Inventory table
+    initialRow = ActiveCell.Row
+    Set rngFound1 = Cells.Find(What:="Inventory", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+        :=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+        False, SearchFormat:=False)
+    iRow = rngFound1.Row
+    'Keep looking for Nuclide Inventory table as long as the find command doesn't start searching from the top again
+    Do While iRow > initialRow
+        
+        If Not rngFound1 Is Nothing Then
+            rngFound1.Select
+            If ActiveCell.Offset(0, -4).Value = "Control" And ActiveCell.Offset(0, -1).Value = "Nuclide" Then
+                'Xe-135 in Control Room Activity
+                Set rngFound2 = Cells.Find(What:="Xe-135", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+                    :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+                    False, SearchFormat:=False)
+                If Not rngFound2 Is Nothing Then
+                    currCell.Offset(0, 11) = rngFound2.Offset(0, 1).Value
+                End If
+            ElseIf ActiveCell.Offset(0, -3).Value = "Containment" And ActiveCell.Offset(0, -1).Value = "Nuclide" Then
+                'Xe-131m in Containment Activity.  If not available, use Cs-137 result.
+                Set rngFound2 = Cells.Find(What:="Xe-131m", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+                    :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+                    False, SearchFormat:=False)
+                If Not rngFound2 Is Nothing Then
+                    currCell.Offset(0, 14) = rngFound2.Offset(0, 1).Value
+                Else
+                    'Cs-137 in Containment Activity
+                    Set rngFound3 = Cells.Find(What:="Cs-137", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+                        :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+                        False, SearchFormat:=False)
+                    If Not rngFound3 Is Nothing Then
+                        currCell.Offset(0, 14) = rngFound3.Offset(0, 1).Value
+                    End If
+                End If
+                'May not be available: Xe-135 in Containment Activity
+                Set rngFound4 = Cells.Find(What:="Xe-135", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+                    :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+                    False, SearchFormat:=False)
+                If Not rngFound4 Is Nothing Then
+                    currCell.Offset(0, 13) = rngFound4.Offset(0, 1).Value
+                End If
+            End If
+        Else
+            Exit Do
+        End If
+        'Find the next Inventory occurence
+        Set rngFound1 = Cells.Find(What:="Inventory", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+            :=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+            False, SearchFormat:=False)
+        iRow = rngFound1.Row
+    Loop
+        
+    '================================================================
+    'PART 3: GATHER ACTIVITY RESULTS FOR IODINE
+    '================================================================
+    
+    'May not exist: Iodine data are available in the I-131 Summary
+    Set rngFound5 = Cells.Find(What:="Summary", After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+        :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+        False, SearchFormat:=False)
+    If Not rngFound5 Is Nothing And rngFound5.Offset(0, -1) = "I-131" Then
+        'Initialize rngFound5 to location of title header for the I-131 Summary table
+        Set rngFound5 = rngFound5.Offset(3, -1)
+        rngFound5.Select
+        'Look for keyword endTime to find output results
+        Cells.Find(What:=endTime, After:=ActiveCell, LookIn:=xlFormulas, LookAt _
+            :=xlWhole, SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:= _
+            False, SearchFormat:=False).Select
+        'Loop through each column in I-131 Summary table to find Iodine results
+        i = 0
+        Do While rngFound5.Offset(0, i) <> ""
+            If rngFound5.Offset(0, i).Value = "Containment" Then
+                currCell.Offset(0, 12) = ActiveCell.Offset(0, 1 + i).Value
+            ElseIf rngFound5.Offset(0, i).Value = "Control" Then
+                currCell.Offset(0, 10) = ActiveCell.Offset(0, 1 + i).Value
+            End If
+            'Increment rngFound4 pointer to the next column in the title header
+            i = i + 1
+        Loop
+        
+        'A possibility exist that the table is separated if it has more than 3 title headers, causing
+        'the control column to shift downwards.  Check for this instance two rows below.
+        'Loop through each column in I-131 Summary table to find Iodine results
+        i = 0
+        Do While ActiveCell.Offset(2, i) <> ""
+            If ActiveCell.Offset(2, i).Value = "Containment" Then
+                currCell.Offset(0, 12) = ActiveCell.Offset(2, 1 + i).End(xlDown).Value
+            ElseIf ActiveCell.Offset(2, i).Value = "Control" Then
+                currCell.Offset(0, 10) = ActiveCell.Offset(2, 1 + i).End(xlDown).Value
+            End If
+            'Increment ActiveCell pointer to the next column in the title header
+            i = i + 1
+        Loop
+    End If
+    
+End Sub
+Sub post_data_processing()
+'
+    Dim colorCount(3) As Integer
+    
+    'Remove data that is not required for specific test case
+    Range("N12:N14").ClearContents
+    Range("O20:O22").ClearContents
+    Range("O24:O26").ClearContents
+    Range("N28:N30").ClearContents
+    Range("N32:P34").ClearContents
+    Range("N36:P38").ClearContents
+    Range("O48:O50").ClearContents
+    Range("O56:O58").ClearContents
+    Range("O60:O62").ClearContents
+    Range("N68:P70").ClearContents
+    Range("N72:P74").ClearContents
+    Range("N76:P78").ClearContents
+    Range("N80:N82").ClearContents
+    Range("N84:N86").ClearContents
+    Range("N88:N90").ClearContents
+    Range("N92:N94").ClearContents
+    Range("N96:N98").ClearContents
+    Range("N100:N102").ClearContents
+    Range("N104:N106").ClearContents
+    Range("N108:N110").ClearContents
+
+    'Select range for Delta % calculated based on its formula content
+    On Error Resume Next
+    Set rConstants = Sheets(1).Range("C8:P143").SpecialCells(xlCellTypeFormulas)
+    On Error GoTo 0
+       
+    'Find the largest absolution % change
+    MaxChange = Abs(WorksheetFunction.Max(rConstants)) * 100
+    minChange = Abs(WorksheetFunction.Min(rConstants)) * 100
+    MsgBox "The largest absolute % delta is " & WorksheetFunction.Round(WorksheetFunction.Max(MaxChange, minChange), 2) & "%"
+
+    'Color code the % Delta values and count them
+    For Each c In rConstants
+        If c <> "" Then
+            If Abs(c.Value * 100) < 0.01 Then
+                c.Interior.ColorIndex = 4
+                colorCount(0) = colorCount(0) + 1
+            ElseIf Abs(c.Value * 100) < 2 Then
+                c.Interior.ColorIndex = 6
+                colorCount(1) = colorCount(1) + 1
+            Else
+                c.Interior.ColorIndex = 3
+                colorCount(2) = colorCount(2) + 1
+            End If
+        End If
+    Next c
+    MsgBox "There are " & colorCount(0) & " results < +-0.01%, " & colorCount(1) & " results < +-2%, and " & colorCount(2) & " results > +-2%"
+End Sub
+
